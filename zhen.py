@@ -4,10 +4,10 @@ import logging  # 导入logging模块，用于记录日志
 import requests  # 导入requests模块，用于发送HTTP请求
 from concurrent.futures import ThreadPoolExecutor, as_completed  # 导入线程池执行器，用于并发处理任务
 from logging.handlers import TimedRotatingFileHandler  # 导入定时轮转日志处理器，用于日志文件的自动轮转
-import okx.Trade_api as TradeAPI  # 导入OKX交易API
-import okx.Public_api as PublicAPI  # 导入OKX公共API
-import okx.Market_api as MarketAPI  # 导入OKX市场API
-import okx.Account_api as AccountAPI  # 导入OKX账户API
+import okx.Trade as TradeAPI  # 导入OKX交易API
+import okx.PublicData as PublicAPI  # 导入OKX公共API
+import okx.MarketData as MarketAPI  # 导入OKX市场API
+import okx.Account as AccountAPI  # 导入OKX账户API
 import pandas as pd  # 导入pandas库，用于数据分析和处理
 
 # 读取配置文件
@@ -161,7 +161,7 @@ def place_order(instId, price, amount_usdt, side):  # 定义函数，下单
     adjusted_price = round_price_to_tick(price, tick_size)  # 调整价格到合适的精度
 
     # 将USDT金额转换为合约张数
-    response = public_api.convert_contract_coin(type='1', instId=instId, sz=str(amount_usdt), px=str(adjusted_price), unit='usdt', opType='open')  # 调用API转换
+    response = public_api.get_convert_contract_coin(type='1', instId=instId, sz=str(amount_usdt), px=str(adjusted_price), unit='usds')  # 调用API转换
     if response['code'] == '0':  # 如果响应码为0，表示成功
         sz = response['data'][0]['sz']  # 获取转换后的合约张数
         if float(sz) > 0:  # 如果张数大于0
