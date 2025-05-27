@@ -2,9 +2,9 @@
     "binance": {
     },
     "okx": {
-        "apiKey": "",
-        "secret": "",
-        "password": "",
+        "apiKey": "6b6b13c6-ea0e-4bd3-a16a-08655a592cea",
+        "secret": "BA95AE7A8BE706B4F2D15F8D7F69389E",
+        "password": "mt@1qaz!QAZ",
         "leverage": 1.0
     },
     "bitget": {
@@ -14,26 +14,26 @@
     "leverage": 10,
     "tradingPairs": {
         "CTC-USDT-SWAP": {
-            "long_amount_usdt": 10,
-            "short_amount_usdt": 10,
+            "long_amount_usdt": 4,
+            "short_amount_usdt": 4,
             "value_multiplier": 3,
             "ema": 240
         },
         "PNUT-USDT-SWAP": {
-            "long_amount_usdt": 20,
-            "short_amount_usdt": 20,
+            "long_amount_usdt": 4,
+            "short_amount_usdt": 4,
             "value_multiplier": 3,
             "ema": 240
         },
         "ACT-USDT-SWAP": {
-            "long_amount_usdt": 10,
-            "short_amount_usdt": 10,
+            "long_amount_usdt": 4,
+            "short_amount_usdt": 4,
             "value_multiplier": 3,
             "ema": 240
         },
         "X-USDT-SWAP": {
-            "long_amount_usdt": 10,
-            "short_amount_usdt": 10,
+            "long_amount_usdt": 4,
+            "short_amount_usdt": 4,
             "value_multiplier": 3,
             "ema": 240
         }
