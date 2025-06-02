@@ -184,69 +184,140 @@ def place_order(instId, price, amount_usdt, side):  # 定义函数，下单
         logger.info(f"{instId}转换失败: {response['msg']}")  # 记录转换失败的信息
         send_feishu_notification(f"{instId}转换失败: {response['msg']}")  # 发送飞书通知
 
-def process_pair(instId, pair_config):  # 定义函数，处理单个交易对
-    try:
-        mark_price = get_mark_price(instId)  # 获取标记价格
-        klines = get_historical_klines(instId)  # 获取历史K线数据
+def process_pair(instId, pair_config):  # 定义函数，处理单个交易对，参数为合约ID和该交易对的配置
+    try:  # 开始异常处理块
+        mark_price = get_mark_price(instId)  # 获取指定合约的标记价格
+        klines = get_historical_klines(instId)  # 获取指定合约的历史K线数据
 
         # 提取收盘价数据用于计算 EMA
-        close_prices = [float(kline[4]) for kline in klines[::-1]]  # K线中的收盘价，顺序要新的在最后
+        # K线中的收盘价，顺序要新的在最后 (pandas Series会自动处理)
+        close_prices_list = [float(kline[4]) for kline in klines[::-1]]  # 从K线数据中提取收盘价，并反转顺序（新的在前），转换为浮点数列表
+        if not close_prices_list:  # 如果收盘价列表为空
+            logger.warning(f"{instId} no close prices available.")  # 记录警告日志，表示没有可用的收盘价数据
+            return  # 结束当前函数执行
+        
+        close_prices_series = pd.Series(close_prices_list)  # 将收盘价列表转换为pandas Series对象
+        current_price = close_prices_series.iloc[-1] # 获取最新的收盘价（即当前价格）
 
-        # 计算 EMA
-        ema_value = pair_config.get('ema', 240)  # 获取EMA周期，默认为240
-        # 如果ema值为0 不区分方向，两头都挂单
-        if ema_value == 0:  # 如果EMA值为0
+        # 初始化趋势判断标志
+        is_bullish_trend = False  # 初始化多头趋势标志为假
+        is_bearish_trend = False  # 初始化空头趋势标志为假
+
+        # 从配置中获取趋势增强参数
+        min_ema_separation_pct = pair_config.get('min_ema_separation_pct', 0.001) # 从交易对配置中获取EMA最小分离百分比，默认为0.001 (0.1%)
+        trend_confirmation_candles = pair_config.get('trend_confirmation_candles', 1) # 从交易对配置中获取趋势确认所需的K线数量，默认为1
+
+        # EMA 相关配置
+        ema_short_period = pair_config.get('ema_short_period')  # 从交易对配置中获取短期EMA周期
+        ema_long_period = pair_config.get('ema_long_period')  # 从交易对配置中获取长期EMA周期
+
+        if ema_long_period == 0:  # 如果长期EMA周期配置为0 (特殊标记，表示不区分方向)
             is_bullish_trend = True  # 设置为多头趋势
             is_bearish_trend = True  # 设置为空头趋势
-        else:
-            ema60 = calculate_ema_pandas(close_prices, period=ema_value)  # 计算EMA
-            logger.info(f"{instId} EMA60: {ema60:.6f}, 当前价格: {mark_price:.6f}")  # 记录EMA和当前价格
-            # 判断趋势：多头趋势或空头趋势
-            is_bullish_trend = close_prices[-1] > ema60  # 收盘价在 EMA60 之上，为多头趋势
-            is_bearish_trend = close_prices[-1] < ema60  # 收盘价在 EMA60 之下，为空头趋势
+            logger.info(f"{instId} ema_long_period is 0, allowing both long and short orders.")  # 记录日志，表明允许双向挂单
+        else:  # 如果长期EMA周期不为0，则进行趋势判断
+            # 使用双EMA进行趋势判断
+            if ema_short_period is None or ema_long_period is None: # 检查短期或长期EMA周期是否未配置
+                logger.warning(f"{instId} ema_short_period or ema_long_period is not configured. No trend identified.") # 记录警告，双EMA周期未配置
+            elif ema_short_period >= ema_long_period:  # 如果短期EMA周期大于或等于长期EMA周期 (配置错误)
+                logger.warning(f"{instId} ema_short_period ({ema_short_period}) should be less than ema_long_period ({ema_long_period}). No trend identified via dual EMA.")  # 记录警告日志，指出配置错误
+            elif len(close_prices_series) < ema_long_period or len(close_prices_series) < trend_confirmation_candles:  # 如果数据长度不足以计算长期EMA或进行趋势确认
+                logger.warning(f"{instId} Not enough data for Dual EMA calculation or trend confirmation. Need {max(ema_long_period, trend_confirmation_candles)}, got {len(close_prices_series)}.")  # 记录警告日志，数据不足
+            else:  # 数据充足且配置正确，开始计算双EMA
+                ema_short_series = close_prices_series.ewm(span=ema_short_period, adjust=False).mean()  # 计算短期EMA序列
+                ema_long_series = close_prices_series.ewm(span=ema_long_period, adjust=False).mean()  # 计算长期EMA序列
+
+                # 当前K线的EMA值
+                current_ema_short = ema_short_series.iloc[-1]  # 获取最新的短期EMA值
+                current_ema_long = ema_long_series.iloc[-1]  # 获取最新的长期EMA值
+
+                # 多头趋势条件
+                bullish_current_condition = (current_price > current_ema_short and  # 当前价格大于短期EMA
+                                           current_ema_short > current_ema_long and  # 且短期EMA大于长期EMA (金叉状态)
+                                           (current_ema_short - current_ema_long) / current_ema_long > min_ema_separation_pct)  # 且短期EMA与长期EMA的分离度大于最小百分比
+                
+                if bullish_current_condition:  # 如果当前K线满足多头趋势条件
+                    bullish_confirmed_historically = True  # 初始化历史确认为真
+                    if trend_confirmation_candles > 1:  # 如果需要多于1根K线进行趋势确认
+                        for i in range(1, trend_confirmation_candles):  # 遍历之前的 trend_confirmation_candles-1 根K线
+                            if len(close_prices_series) <= i or len(ema_short_series) <=i or len(ema_long_series) <=i: # 增加索引检查，防止越界
+                                bullish_confirmed_historically = False # 如果数据不足，则历史确认失败
+                                break
+                            prev_price_val = close_prices_series.iloc[-1-i]  # 获取前第i根K线的收盘价
+                            prev_ema_short_val = ema_short_series.iloc[-1-i]  # 获取前第i根K线的短期EMA值
+                            prev_ema_long_val = ema_long_series.iloc[-1-i]  # 获取前第i根K线的长期EMA值
+                            # 历史K线只检查基本排列和价格位置，不强制检查分离度以避免过于严格
+                            if not (prev_price_val > prev_ema_short_val and prev_ema_short_val > prev_ema_long_val):  # 如果历史K线不满足基本多头排列
+                                bullish_confirmed_historically = False  # 设置历史确认为假
+                                break  # 退出循环
+                    if bullish_confirmed_historically:  # 如果历史趋势得到确认
+                        is_bullish_trend = True  # 设置为多头趋势
+
+                # 空头趋势条件
+                bearish_current_condition = (current_price < current_ema_short and  # 当前价格小于短期EMA
+                                           current_ema_short < current_ema_long and  # 且短期EMA小于长期EMA (死叉状态)
+                                           (current_ema_long - current_ema_short) / current_ema_long > min_ema_separation_pct) # 且长期EMA与短期EMA的分离度大于最小百分比 (使用较慢的EMA作为分母)
+
+                if bearish_current_condition:  # 如果当前K线满足空头趋势条件
+                    bearish_confirmed_historically = True  # 初始化历史确认为真
+                    if trend_confirmation_candles > 1:  # 如果需要多于1根K线进行趋势确认
+                        for i in range(1, trend_confirmation_candles):  # 遍历之前的 trend_confirmation_candles-1 根K线
+                            if len(close_prices_series) <= i or len(ema_short_series) <=i or len(ema_long_series) <=i: # 增加索引检查
+                                bearish_confirmed_historically = False
+                                break
+                            prev_price_val = close_prices_series.iloc[-1-i]  # 获取前第i根K线的收盘价
+                            prev_ema_short_val = ema_short_series.iloc[-1-i]  # 获取前第i根K线的短期EMA值
+                            prev_ema_long_val = ema_long_series.iloc[-1-i]  # 获取前第i根K线的长期EMA值
+                            if not (prev_price_val < prev_ema_short_val and prev_ema_short_val < prev_ema_long_val):  # 如果历史K线不满足基本空头排列
+                                bearish_confirmed_historically = False  # 设置历史确认为假
+                                break  # 退出循环
+                    if bearish_confirmed_historically:  # 如果历史趋势得到确认
+                        is_bearish_trend = True  # 设置为空头趋势
+                
+                logger.info(f"{instId} Dual EMA: Short({ema_short_period}): {current_ema_short:.6f}, Long({ema_long_period}): {current_ema_long:.6f}, Price: {current_price:.6f}. Bullish: {is_bullish_trend}, Bearish: {is_bearish_trend}")  # 记录双EMA的计算结果和趋势判断
 
         # 计算 ATR
-        atr = calculate_atr(klines)  # 计算ATR
-        price_atr_ratio = (mark_price / atr) / 100  # 计算价格与ATR的比值
-        logger.info(f"{instId} ATR: {atr}, 当前价格/ATR比值: {price_atr_ratio:.3f}")  # 记录ATR和比值
+        atr = calculate_atr(klines)  # 计算平均真实波幅(ATR)
+        price_atr_ratio = atr / mark_price  # 计算标记价格与ATR的比值
+        logger.info(f"{instId} ATR: {atr}, 当前价格/ATR比值: {price_atr_ratio:.3f}")  # 记录ATR和价格ATR比值
 
         average_amplitude = calculate_average_amplitude(klines)  # 计算平均振幅
-        logger.info(f"{instId} ATR: {atr}, 平均振幅: {average_amplitude:.2f}%")  # 记录ATR和平均振幅
+        logger.info(f"{instId} ATR: {atr}, 平均振幅: {average_amplitude:.2f}%")  # 记录ATR和平均振幅 (注意这里日志重复记录了ATR，可以考虑调整)
 
-        value_multiplier = pair_config.get('value_multiplier', 2)  # 获取价值乘数，默认为2
-        selected_value = min(average_amplitude, price_atr_ratio) * value_multiplier  # 选择较小的值并乘以乘数
-        selected_value = max(selected_value, 0.8)  # 确保值不小于0.8
+        value_multiplier = pair_config.get('value_multiplier', 2)  # 从交易对配置中获取价值乘数，默认为2
+        selected_value = (average_amplitude+price_atr_ratio)/2 * value_multiplier  # 计算选定值，用于确定价格偏移因子 (平均振幅和价格ATR比值的平均值乘以乘数)
+        #selected_value = max(selected_value, 0.8)  # 确保值不小于0.8 (此行为注释代码)
 
-        long_price_factor = 1 - selected_value / 100  # 计算多单价格因子
-        short_price_factor = 1 + selected_value / 100  # 计算空单价格因子
+        long_price_factor = 1 - selected_value / 100  # 计算多单价格因子 (1 - 选定值百分比)
+        short_price_factor = 1 + selected_value / 100  # 计算空单价格因子 (1 + 选定值百分比)
 
-        long_amount_usdt = pair_config.get('long_amount_usdt', 20)  # 获取多单金额，默认为20 USDT
-        short_amount_usdt = pair_config.get('short_amount_usdt', 20)  # 获取空单金额，默认为20 USDT
+        long_amount_usdt = pair_config.get('long_amount_usdt', 20)  # 从交易对配置中获取多单金额(USDT)，默认为20
+        short_amount_usdt = pair_config.get('short_amount_usdt', 20)  # 从交易对配置中获取空单金额(USDT)，默认为20
 
-        target_price_long = mark_price * long_price_factor  # 计算多单目标价格
-        target_price_short = mark_price * short_price_factor  # 计算空单目标价格
+        target_price_long = mark_price * long_price_factor  # 计算多单目标挂单价格
+        target_price_short = mark_price * short_price_factor  # 计算空单目标挂单价格
 
-        logger.info(f"{instId} Long target price: {target_price_long:.6f}, Short target price: {target_price_short:.6f}")  # 记录目标价格
+        logger.info(f"{instId} Long target price: {target_price_long:.6f}, Short target price: {target_price_short:.6f}")  # 记录计算出的多空目标价格
 
-        cancel_all_orders(instId)  # 取消所有挂单
+        cancel_all_orders(instId)  # 取消该合约所有当前的挂单
 
         # 判断趋势后决定是否挂单
-        if is_bullish_trend:  # 如果是多头趋势
-            logger.info(f"{instId} 当前为多头趋势，允许挂多单")  # 记录多头趋势信息
-            place_order(instId, target_price_long, long_amount_usdt, 'buy')  # 挂多单
-        else:
-            logger.info(f"{instId} 当前非多头趋势，跳过多单挂单")  # 记录非多头趋势信息
+        if is_bullish_trend:  # 如果判断为多头趋势
+            logger.info(f"{instId} 当前为多头趋势，允许挂多单")  # 记录日志，表明当前为多头趋势，将挂多单
+            place_order(instId, target_price_long, long_amount_usdt, 'buy')  # 下多单
+        else:  # 如果非多头趋势
+            logger.info(f"{instId} 当前非多头趋势，跳过多单挂单")  # 记录日志，表明当前非多头趋势，跳过多单
 
-        if is_bearish_trend:  # 如果是空头趋势
-            logger.info(f"{instId} 当前为空头趋势，允许挂空单")  # 记录空头趋势信息
-            place_order(instId, target_price_short, short_amount_usdt, 'sell')  # 挂空单
-        else:
-            logger.info(f"{instId} 当前非空头趋势，跳过空单挂单")  # 记录非空头趋势信息
+        if is_bearish_trend:  # 如果判断为空头趋势
+            logger.info(f"{instId} 当前为空头趋势，允许挂空单")  # 记录日志，表明当前为空头趋势，将挂空单
+            place_order(instId, target_price_short, short_amount_usdt, 'sell')  # 下空单
+        else:  # 如果非空头趋势
+            logger.info(f"{instId} 当前非空头趋势，跳过空单挂单")  # 记录日志，表明当前非空头趋势，跳过空单
 
-    except Exception as e:
+    except Exception as e:  # 捕获处理过程中发生的任何异常
         error_message = f'Error processing {instId}: {e}'  # 构建错误消息
         logger.error(error_message)  # 记录错误日志
-        send_feishu_notification(error_message)  # 发送飞书通知
+        send_feishu_notification(error_message)  # 发送飞书通知告知错误
 
 def main():  # 定义主函数
     fetch_and_store_all_instruments()  # 获取并存储所有合约信息

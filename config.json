@@ -11,13 +11,16 @@
     },
     "feishu_webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/655821a2",
     "monitor_interval": 60,
-    "leverage": 3,
+    "leverage": 1,
     "tradingPairs": {
         "PNUT-USDT-SWAP": {
-            "long_amount_usdt": 4,
-            "short_amount_usdt": 4,
-            "value_multiplier": 3,
-            "ema": 240
-        }
+            "ema_short_period": 12,
+            "ema_long_period": 26,
+            "min_ema_separation_pct": 0.002, 
+            "trend_confirmation_candles": 3,  
+            "long_amount_usdt": 10,
+            "short_amount_usdt": 10,
+            "value_multiplier": 3
+        }       
     }
 }
